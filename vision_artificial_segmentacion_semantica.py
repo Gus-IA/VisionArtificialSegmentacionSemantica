@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import pandas as pd
 import torchvision.transforms.functional as TF
+import torchvision
+import random
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -307,4 +309,75 @@ hist = fit(model, dataloader, epochs=30)
 # muestra del resultado
 df = pd.DataFrame(hist)
 df.plot(grid=True)
+plt.show()
+
+
+class out_conv(torch.nn.Module):
+    def __init__(self, ci, co, coo):
+        super(out_conv, self).__init__()
+        self.upsample = torch.nn.ConvTranspose2d(ci, co, 2, stride=2)
+        self.conv = conv3x3_bn(ci, co)
+        self.final = torch.nn.Conv2d(co, coo, 1)
+
+    def forward(self, x1, x2):
+        x1 = self.upsample(x1)
+        diffX = x2.size()[2] - x1.size()[2]
+        diffY = x2.size()[3] - x1.size()[3]
+        x1 = F.pad(x1, (diffX, 0, diffY, 0))
+        x = self.conv(x1)
+        x = self.final(x)
+        return x
+
+class UNetResnet(torch.nn.Module):
+    def __init__(self, n_classes=3, in_ch=1):
+        super().__init__()
+
+        self.encoder = torchvision.models.resnet18(pretrained=True)           
+        if in_ch != 3:
+          self.encoder.conv1 = torch.nn.Conv2d(in_ch, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        self.deconv1 = deconv(512,256)
+        self.deconv2 = deconv(256,128)
+        self.deconv3 = deconv(128,64)
+        self.out = out_conv(64, 64, n_classes)
+
+    def forward(self, x):
+        x_in = torch.tensor(x.clone())
+        x = self.encoder.relu(self.encoder.bn1(self.encoder.conv1(x)))
+        x1 = self.encoder.layer1(x)
+        x2 = self.encoder.layer2(x1)
+        x3 = self.encoder.layer3(x2)
+        x = self.encoder.layer4(x3)
+        x = self.deconv1(x, x3)
+        x = self.deconv2(x, x2)
+        x = self.deconv3(x, x1)
+        x = self.out(x, x_in)
+        return x
+    
+
+model = UNetResnet()
+output = model(torch.randn((10,1,394,394)))
+print(output.shape)
+
+
+model = UNetResnet()
+hist = fit(model, dataloader, epochs=30)
+
+
+df = pd.DataFrame(hist)
+df.plot(grid=True)
+plt.show()
+
+
+model.eval()
+with torch.no_grad():
+    ix = random.randint(0, len(dataset['test'])-1)
+    img, mask = dataset['test'][ix]
+    output = model(img.unsqueeze(0).to(device))[0]
+    pred_mask = torch.argmax(output, axis=0)
+    
+fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(30,10))
+ax1.imshow(img.squeeze(0))
+ax2.imshow(torch.argmax(mask, axis=0))
+ax3.imshow(pred_mask.squeeze().cpu().numpy())
 plt.show()
